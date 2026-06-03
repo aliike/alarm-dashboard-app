@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>New Customer — Alarm Dashboard</title>
+    <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="navbar">
+    <a href="/" class="navbar-logo">Alarm<span>Dashboard</span></a>
+    <ul class="navbar-links">
+        <li><a href="/">Dashboard</a></li>
+        <li><a href="/customers.html">Customers</a></li>
+    </ul>
+</nav>
+
+<div class="page" style="max-width:740px">
+    <div class="page-header">
+        <h1 class="page-title">New Customer</h1>
+        <a href="/customers.html" class="btn btn-secondary">← Back</a>
+    </div>
+
+    <!-- ── Form ───────────────────────────────────────────── -->
+    <div class="card">
+        <form id="add-form" novalidate>
+
+            <div class="form-group">
+                <label class="form-label" for="name">Customer Name</label>
+                <input class="form-input" id="name" type="text"
+                       placeholder="e.g. Acme Corp" autocomplete="off">
+                <span class="form-error" id="err-name">Required.</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Account Type</label>
+                <div class="radio-group">
+                    <label class="radio-option">
+                        <input type="radio" name="account_type" value="standalone" checked>
+                        Standalone
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="account_type" value="payer">
+                        Payer (Organization)
+                    </label>
+                </div>
+            </div>
+
+            <div id="payer-warning" style="display:none;margin-bottom:20px">
+                <div class="alert alert-warning">
+                    <strong>Payer account selected.</strong> Sub-accounts in the AWS Organization
+                    must also have the <code>AlarmDashboardRole</code> created. They will be
+                    discovered automatically via <code>organizations:ListAccounts</code>.
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="root_account_id">Root Account ID</label>
+                <input class="form-input" id="root_account_id" type="text"
+                       placeholder="123456789012" maxlength="12" autocomplete="off">
+                <span class="form-error" id="err-account-id">Must be exactly 12 digits.</span>
+                <span class="form-hint">The 12-digit AWS Account ID for this customer's root/main account.</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="role_arn">Role ARN</label>
+                <input class="form-input" id="role_arn" type="text"
+                       placeholder="arn:aws:iam::123456789012:role/AlarmDashboardRole"
+                       autocomplete="off">
+                <span class="form-error" id="err-role-arn">
+                    Format: arn:aws:iam::&lt;12-digit-id&gt;:role/&lt;name&gt;
+                </span>
+                <span class="form-hint">Auto-filled when you enter the Account ID above.</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="external_id">
+                    External ID
+                    <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span>
+                </label>
+                <input class="form-input" id="external_id" type="text"
+                       placeholder="Leave empty if not configured" autocomplete="off">
+            </div>
+
+            <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:8px">
+                <a href="/customers.html" class="btn btn-secondary">Cancel</a>
+                <button type="submit" id="submit-btn" class="btn btn-primary">Add Customer</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- ── IAM Setup Guide ────────────────────────────────── -->
+    <div class="guide">
+        <div class="guide-title">IAM Setup Guide</div>
+
+        <!-- Step 1 -->
+        <div class="guide-step">
+            <div class="guide-step-num">1</div>
+            <div class="guide-step-body">
+                <div class="guide-step-title">Determine account type</div>
+                <div class="guide-step-desc">
+                    Choose <strong>Payer</strong> if this is the AWS Organizations management account —
+                    sub-accounts will be discovered automatically.
+                    Choose <strong>Standalone</strong> for a single independent account.
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="guide-step">
+            <div class="guide-step-num">2</div>
+            <div class="guide-step-body">
+                <div class="guide-step-title">Create the IAM Role in the customer's account</div>
+                <div class="guide-step-desc">
+                    Log into the <strong>customer's AWS account</strong> and go to
+                    <strong>IAM → Roles → Create role</strong>.
+                    Select <em>Another AWS account</em> as the trusted entity.
+                    Name the role exactly <code>AlarmDashboardRole</code>.
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3 — Trust Policy (dynamic: EC2 account ID) -->
+        <div class="guide-step">
+            <div class="guide-step-num">3</div>
+            <div class="guide-step-body">
+                <div class="guide-step-title">Trust Policy</div>
+                <div class="guide-step-desc">
+                    Enter the AWS Account ID of the EC2 instance running this dashboard,
+                    then copy the generated policy:
+                </div>
+                <div style="margin-bottom:12px">
+                    <input class="form-input" id="guide-ec2-account-id" type="text"
+                           maxlength="12" placeholder="EC2 Account ID (12 digits)"
+                           style="max-width:280px"
+                           autocomplete="off">
+                </div>
+                <div class="code-wrap">
+                    <pre class="code-block" id="trust-policy-code"></pre>
+                    <button class="code-copy-btn" type="button"
+                            onclick="copyBlock('trust-policy-code', this)">Copy</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 4 — Permission Policy (dynamic: standalone vs payer) -->
+        <div class="guide-step">
+            <div class="guide-step-num">4</div>
+            <div class="guide-step-body">
+                <div class="guide-step-title">Permission Policy</div>
+                <div class="guide-step-desc" id="perm-policy-desc"></div>
+                <div class="code-wrap">
+                    <pre class="code-block" id="perm-policy-code"></pre>
+                    <button class="code-copy-btn" type="button"
+                            onclick="copyBlock('perm-policy-code', this)">Copy</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 5 — Role ARN (dynamic: from account ID field) -->
+        <div class="guide-step">
+            <div class="guide-step-num">5</div>
+            <div class="guide-step-body">
+                <div class="guide-step-title">Copy the Role ARN into the form</div>
+                <div class="guide-step-desc">
+                    After creating the role, copy its ARN from the role summary page
+                    and paste it in the <strong>Role ARN</strong> field above.
+                    Based on the Account ID you entered, your ARN should be:
+                </div>
+                <div class="code-wrap">
+                    <pre class="code-block" id="guide-role-arn-code"></pre>
+                    <button class="code-copy-btn" type="button"
+                            onclick="copyBlock('guide-role-arn-code', this)">Copy</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Payer-only note -->
+        <div id="payer-sub-note" style="display:none;margin-bottom:20px">
+            <div class="alert alert-warning">
+                <strong>Payer account:</strong> The <code>AlarmDashboardRole</code> must also be
+                created in every sub-account of the Organization. The dashboard will
+                automatically discover sub-accounts and attempt to AssumeRole into each one.
+            </div>
+        </div>
+
+        <!-- EC2 Instance Profile note -->
+        <div class="alert alert-info">
+            <strong>EC2 Instance Profile:</strong> The EC2 instance running this dashboard must have
+            an IAM role with <code>sts:AssumeRole</code> permission on
+            <code>arn:aws:iam::*:role/AlarmDashboardRole</code>.
+        </div>
+    </div>
+</div>
+
+<div id="toast-container"></div>
+<script src="assets/app.js"></script>
+<script>
+const ARN_RE  = /^arn:aws:iam::\d{12}:role\/.+$/;
+const ACCT_RE = /^\d{12}$/;
+
+/* ── Guide update ──────────────────────────────────────────── */
+
+function getFormValues() {
+    return {
+        accountId:   document.getElementById('root_account_id').value.trim(),
+        ec2AccountId: document.getElementById('guide-ec2-account-id').value.trim(),
+        isPayer:     document.querySelector('input[name="account_type"]:checked').value === 'payer',
+    };
+}
+
+function updateGuide() {
+    const { accountId, ec2AccountId, isPayer } = getFormValues();
+
+    // Trust Policy
+    const principal = ACCT_RE.test(ec2AccountId)
+        ? `arn:aws:iam::${ec2AccountId}:root`
+        : 'arn:aws:iam::YOUR_EC2_ACCOUNT_ID:root';
+
+    document.getElementById('trust-policy-code').textContent = JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [{
+            Effect: 'Allow',
+            Principal: { AWS: principal },
+            Action: 'sts:AssumeRole',
+            Condition: {},
+        }]
+    }, null, 2);
+
+    // Permission Policy
+    const actions = ['cloudwatch:DescribeAlarms', 'ec2:DescribeRegions'];
+    if (isPayer) {
+        actions.push('organizations:ListAccounts', 'organizations:DescribeAccount');
+    }
+    document.getElementById('perm-policy-code').textContent = JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: actions, Resource: '*' }]
+    }, null, 2);
+
+    document.getElementById('perm-policy-desc').innerHTML = isPayer
+        ? 'Attach this policy to the role. For Payer accounts, <code>organizations:*</code> permissions are required to discover sub-accounts.'
+        : 'Attach this policy to the role. For Standalone accounts, only CloudWatch and EC2 permissions are needed — no Organizations access required.';
+
+    // Role ARN
+    const roleArn = ACCT_RE.test(accountId)
+        ? `arn:aws:iam::${accountId}:role/AlarmDashboardRole`
+        : 'arn:aws:iam::YOUR_ACCOUNT_ID:role/AlarmDashboardRole';
+    document.getElementById('guide-role-arn-code').textContent = roleArn;
+
+    // Payer sub-account note
+    document.getElementById('payer-sub-note').style.display = isPayer ? 'block' : 'none';
+}
+
+/* ── Auto-fill Role ARN when account ID is typed ───────────── */
+
+document.getElementById('root_account_id').addEventListener('input', function () {
+    const id = this.value.trim();
+    const roleField = document.getElementById('role_arn');
+    if (ACCT_RE.test(id)) {
+        roleField.value = `arn:aws:iam::${id}:role/AlarmDashboardRole`;
+    } else if (!roleField.value || /^arn:aws:iam::\d{12}:role\/AlarmDashboardRole$/.test(roleField.value)) {
+        // Only clear auto-filled value, not manually edited ones
+        roleField.value = '';
+    }
+    updateGuide();
+});
+
+/* ── Account type change ───────────────────────────────────── */
+
+document.querySelectorAll('input[name="account_type"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+        const isPayer = document.querySelector('input[name="account_type"]:checked').value === 'payer';
+        document.getElementById('payer-warning').style.display = isPayer ? 'block' : 'none';
+        updateGuide();
+    });
+});
+
+/* ── EC2 account ID in guide ───────────────────────────────── */
+
+document.getElementById('guide-ec2-account-id').addEventListener('input', updateGuide);
+
+/* ── Copy helper ───────────────────────────────────────────── */
+
+function copyBlock(codeId, btn) {
+    const text = document.getElementById(codeId).textContent.trim();
+    navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1800);
+    });
+}
+
+/* ── Form submit ───────────────────────────────────────────── */
+
+document.getElementById('add-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const name      = document.getElementById('name').value.trim();
+    const accountId = document.getElementById('root_account_id').value.trim();
+    const roleArn   = document.getElementById('role_arn').value.trim();
+    const extId     = document.getElementById('external_id').value.trim();
+    const acctType  = document.querySelector('input[name="account_type"]:checked').value;
+
+    let valid = true;
+    function setError(fieldId, errId, condition) {
+        const input = document.getElementById(fieldId);
+        const err   = document.getElementById(errId);
+        if (condition) {
+            input.classList.add('error');
+            err.classList.add('visible');
+            valid = false;
+        } else {
+            input.classList.remove('error');
+            err.classList.remove('visible');
+        }
+    }
+
+    setError('name',            'err-name',       !name);
+    setError('root_account_id', 'err-account-id', !ACCT_RE.test(accountId));
+    setError('role_arn',        'err-role-arn',   !ARN_RE.test(roleArn));
+
+    if (!valid) return;
+
+    const btn = document.getElementById('submit-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Adding…';
+
+    try {
+        await apiPost('/customers', {
+            name,
+            account_type:    acctType,
+            root_account_id: accountId,
+            role_arn:        roleArn,
+            external_id:     extId || null,
+        });
+        showToast('Customer added successfully.', 'success');
+        setTimeout(() => { location.href = '/customers.html'; }, 800);
+    } catch (err) {
+        showToast(err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Add Customer';
+    }
+});
+
+/* ── Init ──────────────────────────────────────────────────── */
+updateGuide();
+</script>
+</body>
+</html>

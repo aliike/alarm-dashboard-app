@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Detail — Alarm Dashboard</title>
+    <link rel="stylesheet" href="assets/style.css">
+    <style>
+        .accounts-table tbody tr.row-error td { background: rgba(220,38,38,.04); }
+        .accounts-table tbody tr.row-error:hover td { background: rgba(220,38,38,.08); }
+        .alarm-count-cell { display:flex; gap:5px; flex-wrap:wrap; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar">
+    <a href="/" class="navbar-logo">Alarm<span>Dashboard</span></a>
+    <ul class="navbar-links">
+        <li><a href="/">Dashboard</a></li>
+        <li><a href="/customers.html">Customers</a></li>
+    </ul>
+</nav>
+
+<div class="page">
+
+    <!-- ── Header ──────────────────────────────────────────── -->
+    <div id="page-header">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:24px">
+            <div>
+                <div style="margin-bottom:6px">
+                    <a href="/customers.html"
+                       style="font-size:0.78rem;color:var(--text-secondary);text-decoration:none"
+                       onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text-secondary)'">
+                        ← Customers
+                    </a>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                    <h1 class="page-title" id="customer-name">Loading…</h1>
+                    <span id="customer-type-badge"></span>
+                </div>
+                <div id="customer-meta"
+                     style="font-size:0.75rem;color:var(--text-secondary);margin-top:4px"></div>
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0;margin-top:4px">
+                <button id="sync-btn" class="btn btn-secondary btn-sm" onclick="triggerSync()">
+                    🔄 Sync
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Summary cards ────────────────────────────────────── -->
+    <div class="summary-row" id="summary-row">
+        <div class="summary-card"><div>
+            <div class="summary-num" id="sum-accounts">—</div>
+            <div class="summary-label">Accounts</div>
+        </div></div>
+        <div class="summary-card"><div>
+            <div class="summary-num text-alarm" id="sum-alarm">—</div>
+            <div class="summary-label">ALARM</div>
+        </div></div>
+        <div class="summary-card"><div>
+            <div class="summary-num" style="color:var(--insufficient)" id="sum-insuf">—</div>
+            <div class="summary-label">INSUFFICIENT</div>
+        </div></div>
+        <div class="summary-card"><div>
+            <div class="summary-num" style="color:var(--ok)" id="sum-ok">—</div>
+            <div class="summary-label">OK</div>
+        </div></div>
+    </div>
+
+    <!-- ── Accounts table ───────────────────────────────────── -->
+    <div style="font-size:0.7rem;font-weight:600;text-transform:uppercase;
+                letter-spacing:0.08em;color:var(--text-secondary);margin-bottom:8px">
+        Accounts
+    </div>
+    <div class="card" style="padding:0;overflow:hidden;margin-bottom:28px">
+        <div id="accounts-container">
+            <div class="empty-state" style="padding:32px">
+                <div class="spinner" style="margin:0 auto"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Alarms section ───────────────────────────────────── -->
+    <div style="display:flex;align-items:center;justify-content:space-between;
+                gap:12px;margin-bottom:12px;flex-wrap:wrap">
+        <div style="font-size:0.7rem;font-weight:600;text-transform:uppercase;
+                    letter-spacing:0.08em;color:var(--text-secondary)">
+            Alarms
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <div style="display:flex;gap:4px" id="state-filter-btns">
+                <button class="filter-btn active" data-state="ALARM"             onclick="toggleState(this)">ALARM</button>
+                <button class="filter-btn active" data-state="INSUFFICIENT_DATA" onclick="toggleState(this)">INSUF.</button>
+                <button class="filter-btn"        data-state="OK"                onclick="toggleState(this)">OK</button>
+                <button class="filter-btn"        data-state="ALL"               onclick="toggleState(this)">All States</button>
+            </div>
+            <select id="region-select" class="form-input"
+                    style="width:180px;padding:5px 10px;font-size:0.8rem"
+                    onchange="onRegionChange()">
+                <option value="">All Regions</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="card" style="padding:0;overflow:hidden">
+        <div id="alarm-loading-bar" class="loading-bar" style="display:none"></div>
+        <div id="alarm-container"></div>
+    </div>
+    <div id="alarm-row-count"
+         style="margin-top:8px;font-size:0.75rem;color:var(--text-secondary);text-align:right">
+    </div>
+
+</div><!-- /page -->
+
+<div id="toast-container"></div>
+<script src="assets/app.js"></script>
+<script>
+/* ── State ──────────────────────────────────────────────────────── */
+const customerId = new URLSearchParams(window.location.search).get('id');
+let customer     = null;
+let cachedAlarms = [];
+let selectedStates = new Set(['ALARM', 'INSUFFICIENT_DATA']);
+let isAllStates    = false;
+let selectedRegion = '';
+let refreshTimer   = null;
+
+/* ── Init ───────────────────────────────────────────────────────── */
+async function init() {
+    if (!customerId) {
+        document.querySelector('.page').innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">⚠</div>
+                <div class="empty-state-text">No customer ID in URL.</div>
+                <div class="empty-state-sub"><a href="/customers.html">← Go back</a></div>
+            </div>`;
+        return;
+    }
+    await loadCustomer();
+    await loadAlarms();
+    startRefreshTimer();
+}
+
+/* ── Load customer data ─────────────────────────────────────────── */
+async function loadCustomer() {
+    try {
+        customer = await apiGet(`/customers/${customerId}`);
+        renderHeader();
+        renderSummary();
+        renderAccounts();
+    } catch (e) {
+        showToast(e.message, 'error');
+        document.getElementById('customer-name').textContent = 'Error';
+    }
+}
+
+/* ── Load alarms ────────────────────────────────────────────────── */
+async function loadAlarms() {
+    document.getElementById('alarm-loading-bar').style.display = 'block';
+    try {
+        cachedAlarms = await apiGet(`/customers/${customerId}/alarms`);
+        updateRegionDropdown();
+        applyAlarmFilters();
+    } catch (e) {
+        showToast('Failed to load alarms: ' + e.message, 'error');
+    } finally {
+        document.getElementById('alarm-loading-bar').style.display = 'none';
+    }
+}
+
+/* ── Render header ──────────────────────────────────────────────── */
+function renderHeader() {
+    document.title = `${customer.name} — Alarm Dashboard`;
+    document.getElementById('customer-name').textContent = customer.name;
+    document.getElementById('customer-type-badge').innerHTML =
+        `<span class="badge badge-${customer.account_type}">${customer.account_type.toUpperCase()}</span>`;
+    document.getElementById('customer-meta').textContent =
+        `Root: ${customer.root_account_id}  ·  Added: ${formatDateTimeAbsolute(customer.created_at)}`;
+}
+
+/* ── Render summary cards ───────────────────────────────────────── */
+function renderSummary() {
+    if (!customer) return;
+    document.getElementById('sum-accounts').textContent = customer.account_count;
+    document.getElementById('sum-alarm').textContent    = customer.alarm_summary?.ALARM ?? '—';
+    document.getElementById('sum-insuf').textContent    = customer.alarm_summary?.INSUFFICIENT_DATA ?? '—';
+    document.getElementById('sum-ok').textContent       = customer.alarm_summary?.OK ?? '—';
+}
+
+/* ── Render accounts table ──────────────────────────────────────── */
+function renderAccounts() {
+    const el = document.getElementById('accounts-container');
+    const accounts = customer?.accounts ?? [];
+
+    if (accounts.length === 0) {
+        el.innerHTML = '<div class="empty-state" style="padding:32px"><div class="empty-state-text">No accounts found.</div></div>';
+        return;
+    }
+
+    // Sort: root first
+    const sorted = [...accounts].sort((a, b) => (b.is_root ? 1 : 0) - (a.is_root ? 1 : 0));
+
+    el.innerHTML = `
+    <div class="table-wrap">
+      <table class="accounts-table">
+        <thead>
+          <tr>
+            <th>Account Name</th>
+            <th>Account ID</th>
+            <th>Type</th>
+            <th>Alarms</th>
+            <th>Sync Status</th>
+            <th>Last Sync</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sorted.map(a => {
+            const isErr  = a.sync_status === 'error';
+            const counts = a.alarm_counts || {};
+            const alarmN = counts.ALARM || 0;
+            const insufN = counts.INSUFFICIENT_DATA || 0;
+            const okN    = counts.OK || 0;
+            const errTitle = isErr ? escHtml(a.sync_error || 'Unknown error') : '';
+
+            return `<tr class="${isErr ? 'row-error' : ''}">
+              <td style="font-weight:500">${escHtml(a.account_name || '—')}</td>
+              <td style="font-size:0.78rem;color:var(--text-secondary);font-family:var(--font)">
+                ${escHtml(a.account_id)}</td>
+              <td>
+                <span class="badge ${a.is_root ? 'badge-payer' : 'badge-standalone'}"
+                      style="font-size:0.65rem">
+                  ${a.is_root ? 'ROOT' : 'MEMBER'}
+                </span>
+              </td>
+              <td>
+                <div class="alarm-count-cell">
+                  ${alarmN > 0 ? `<span class="badge badge-alarm" style="font-size:0.65rem">${alarmN}</span>` : ''}
+                  ${insufN > 0 ? `<span class="badge badge-insufficient" style="font-size:0.65rem">${insufN}</span>` : ''}
+                  ${okN > 0    ? `<span class="badge badge-ok" style="font-size:0.65rem">${okN}</span>`    : ''}
+                  ${(alarmN + insufN + okN === 0) ? '<span style="color:var(--text-muted);font-size:0.75rem">—</span>' : ''}
+                </div>
+              </td>
+              <td>
+                ${isErr
+                  ? `<span class="badge badge-error" title="${errTitle}" style="cursor:help">
+                       ❌ error
+                     </span>`
+                  : a.sync_status === 'ok'
+                  ? `<span class="badge badge-ok">✓ ok</span>`
+                  : `<span class="badge badge-pending">⏳ ${escHtml(a.sync_status)}</span>`
+                }
+              </td>
+              <td style="font-size:0.78rem;white-space:nowrap">
+                <span title="${escHtml(formatDateTimeAbsolute(a.last_sync_at))}"
+                      style="cursor:default">
+                  ${formatDateTime(a.last_sync_at)}
+                </span>
+              </td>
+              <td>
+                <button class="btn btn-secondary btn-sm"
+                        onclick="syncAccount(event, ${a.id}, '${escHtml(a.account_id)}')">
+                  🔄
+                </button>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+/* ── Alarm filters ──────────────────────────────────────────────── */
+function toggleState(btn) {
+    const state = btn.dataset.state;
+    if (state === 'ALL') {
+        isAllStates = !isAllStates;
+        if (isAllStates) selectedStates.clear();
+    } else {
+        isAllStates = false;
+        if (selectedStates.has(state)) selectedStates.delete(state);
+        else selectedStates.add(state);
+    }
+    syncStateBtnUI();
+    applyAlarmFilters();
+}
+
+function syncStateBtnUI() {
+    document.querySelectorAll('#state-filter-btns .filter-btn').forEach(b => {
+        const s = b.dataset.state;
+        if (s === 'ALL') b.classList.toggle('active', isAllStates);
+        else b.classList.toggle('active', !isAllStates && selectedStates.has(s));
+    });
+}
+
+function onRegionChange() {
+    selectedRegion = document.getElementById('region-select').value;
+    applyAlarmFilters();
+}
+
+function updateRegionDropdown() {
+    const sel = document.getElementById('region-select');
+    const prev = sel.value;
+    const regions = [...new Set(cachedAlarms.map(a => a.region))].sort();
+    sel.innerHTML = '<option value="">All Regions</option>' +
+        regions.map(r =>
+            `<option value="${r}" ${r === prev ? 'selected' : ''}>${escHtml(r)}</option>`
+        ).join('');
+}
+
+function applyAlarmFilters() {
+    let visible = cachedAlarms;
+
+    if (!isAllStates) {
+        if (selectedStates.size === 0) { visible = []; }
+        else { visible = cachedAlarms.filter(a => selectedStates.has(a.state)); }
+    }
+    if (selectedRegion) {
+        visible = visible.filter(a => a.region === selectedRegion);
+    }
+
+    renderAlarmTable(visible);
+    const n = visible.length;
+    document.getElementById('alarm-row-count').textContent =
+        n > 0 ? `${n} alarm${n !== 1 ? 's' : ''} shown` : '';
+}
+
+/* ── Render alarm table ─────────────────────────────────────────── */
+function renderAlarmTable(alarms) {
+    const el = document.getElementById('alarm-container');
+
+    if (alarms.length === 0) {
+        const msg = (!isAllStates && selectedStates.size === 0)
+            ? 'Durum filtresi seçin.'
+            : '🟢 Bu müşteri için aktif alarm yok.';
+        el.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">${cachedAlarms.length > 0 && alarms.length === 0 ? '🔍' : '🟢'}</div>
+                <div class="empty-state-text">${escHtml(msg)}</div>
+            </div>`;
+        return;
+    }
+
+    el.innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Account</th>
+            <th>Account ID</th>
+            <th>Region</th>
+            <th>Alarm Name</th>
+            <th>Namespace</th>
+            <th>State</th>
+            <th>Last Changed</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${alarms.map(a => `
+            <tr>
+              <td style="font-weight:500">${escHtml(a.account_name || '—')}</td>
+              <td style="font-size:0.78rem;color:var(--text-secondary);font-family:var(--font)">
+                ${escHtml(a.account_id)}</td>
+              <td style="font-size:0.78rem">${escHtml(a.region)}</td>
+              <td style="max-width:240px">
+                <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                      title="${escHtml(a.alarm_name)}">${escHtml(a.alarm_name)}</span>
+                ${a.alarm_description
+                  ? `<span style="font-size:0.72rem;color:var(--text-secondary);display:block;
+                             overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                             title="${escHtml(a.alarm_description)}">${escHtml(a.alarm_description)}</span>`
+                  : ''}
+              </td>
+              <td style="font-size:0.78rem;color:var(--text-secondary)">${escHtml(a.namespace || '—')}</td>
+              <td>${stateBadge(a.state)}</td>
+              <td>
+                <span title="${escHtml(formatDateTimeAbsolute(a.updated_at))}"
+                      style="cursor:default;white-space:nowrap">
+                  ${formatDateTime(a.updated_at)}
+                </span>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+/* ── Sync actions ───────────────────────────────────────────────── */
+async function triggerSync() {
+    const btn = document.getElementById('sync-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+
+    try {
+        await apiPost(`/sync/${customerId}`, {});
+        showToast('Sync started.', 'success');
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+
+    setTimeout(async () => {
+        await loadCustomer();
+        await loadAlarms();
+        btn.disabled = false;
+        btn.innerHTML = '🔄 Sync';
+    }, 3000);
+}
+
+async function syncAccount(e, accountId, accountLabel) {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+
+    try {
+        await apiPost(`/sync/account/${accountId}`, {});
+        showToast(`Sync started for ${accountLabel}.`, 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+
+    setTimeout(async () => {
+        await loadCustomer();
+        await loadAlarms();
+        // btn will be recreated by renderAccounts, no need to reset
+    }, 3000);
+}
+
+/* ── Auto-refresh every 30 s ────────────────────────────────────── */
+function startRefreshTimer() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(async () => {
+        await loadCustomer();
+        await loadAlarms();
+    }, 30000);
+}
+
+/* ── Start ──────────────────────────────────────────────────────── */
+init();
+</script>
+</body>
+</html>

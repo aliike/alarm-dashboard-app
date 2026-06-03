@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard — Alarm Dashboard</title>
+    <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="navbar">
+    <a href="/" class="navbar-logo">Alarm<span>Dashboard</span></a>
+    <ul class="navbar-links">
+        <li><a href="/">Dashboard</a></li>
+        <li><a href="/customers.html">Customers</a></li>
+    </ul>
+</nav>
+
+<div class="page">
+
+    <!-- ── Header ────────────────────────────────────────────── -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;gap:16px">
+        <h1 class="page-title">⚡ Alarm Dashboard</h1>
+        <div style="display:flex;align-items:center;gap:12px;flex-shrink:0">
+            <span id="sync-indicator"
+                  style="font-size:0.78rem;color:var(--text-secondary);white-space:nowrap">
+                Son sync: —
+            </span>
+            <button id="sync-btn" class="btn btn-secondary btn-sm" onclick="triggerSync()">
+                🔄 Sync
+            </button>
+        </div>
+    </div>
+
+    <!-- ── Summary cards ─────────────────────────────────────── -->
+    <div class="summary-row" id="summary-row">
+        <div class="summary-card">
+            <div><div class="summary-num text-alarm" id="sum-alarm">—</div><div class="summary-label">ALARM</div></div>
+        </div>
+        <div class="summary-card">
+            <div><div class="summary-num" style="color:var(--insufficient)" id="sum-insuf">—</div><div class="summary-label">INSUFFICIENT</div></div>
+        </div>
+        <div class="summary-card">
+            <div><div class="summary-num" style="color:var(--ok)" id="sum-ok">—</div><div class="summary-label">OK</div></div>
+        </div>
+        <div class="summary-card">
+            <div><div class="summary-num" id="sum-accounts">—</div><div class="summary-label">Accounts</div></div>
+        </div>
+    </div>
+
+    <!-- ── Customer chips ────────────────────────────────────── -->
+    <div style="margin-bottom:16px">
+        <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;
+                    color:var(--text-secondary);margin-bottom:8px;font-weight:500">
+            Customers
+        </div>
+        <div class="chip-row" id="customer-chips">
+            <!-- chips rendered by JS -->
+        </div>
+    </div>
+
+    <!-- ── Filters ───────────────────────────────────────────── -->
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+        <div style="display:flex;gap:4px" id="state-filter-btns">
+            <button class="filter-btn active" data-state="ALARM"             onclick="toggleState(this)">ALARM</button>
+            <button class="filter-btn active" data-state="INSUFFICIENT_DATA" onclick="toggleState(this)">INSUF.</button>
+            <button class="filter-btn"        data-state="OK"                onclick="toggleState(this)">OK</button>
+            <button class="filter-btn"        data-state="ALL"               onclick="toggleState(this)">All States</button>
+        </div>
+        <select id="region-select" class="form-input"
+                style="width:188px;padding:5px 10px;font-size:0.8rem"
+                onchange="onRegionChange()">
+            <option value="">All Regions</option>
+        </select>
+    </div>
+
+    <!-- ── Table card ────────────────────────────────────────── -->
+    <div class="card" style="padding:0;overflow:hidden">
+        <div id="loading-bar" class="loading-bar" style="display:none"></div>
+        <div id="table-container"></div>
+    </div>
+    <div id="row-count"
+         style="margin-top:8px;font-size:0.75rem;color:var(--text-secondary);text-align:right">
+    </div>
+
+</div><!-- /page -->
+
+<div id="toast-container"></div>
+<script src="assets/app.js"></script>
+<script>
+/* ── State ─────────────────────────────────────────────────────── */
+let allCustomers     = [];
+let cachedAlarms     = [];          // all alarms for selected customers (no state/region filter)
+let selectedCustomerIds = new Set();
+let selectedStates   = new Set(['ALARM', 'INSUFFICIENT_DATA']);
+let isAllStates      = false;
+let selectedRegion   = '';
+let isSyncing        = false;
+let refreshTimer     = null;
+
+/* ── Init ──────────────────────────────────────────────────────── */
+async function init() {
+    await loadCustomers();
+    await fetchAndCache(false);
+    startRefreshTimer();
+}
+
+/* ── Load customers ────────────────────────────────────────────── */
+async function loadCustomers() {
+    try {
+        const fresh = await apiGet('/customers');
+        allCustomers = fresh;
+        if (selectedCustomerIds.size === 0 && allCustomers.length > 0) {
+            selectedCustomerIds = new Set(allCustomers.map(c => c.id));
+        }
+        renderChips();
+    } catch (e) {
+        renderChipsError(e.message);
+    }
+}
+
+/* ── Fetch alarms and cache ─────────────────────────────────────── */
+async function fetchAndCache(showBar = true) {
+    if (selectedCustomerIds.size === 0) {
+        cachedAlarms = [];
+        applyFilters();
+        return;
+    }
+
+    if (showBar) document.getElementById('loading-bar').style.display = 'block';
+
+    try {
+        const params = new URLSearchParams();
+        // Only send customer_ids if it's a subset
+        if (selectedCustomerIds.size < allCustomers.length) {
+            params.set('customer_ids', [...selectedCustomerIds].join(','));
+        }
+        const qs = params.toString();
+        cachedAlarms = await apiGet('/alarms' + (qs ? '?' + qs : ''));
+        updateRegionDropdown();
+        applyFilters();
+    } catch (e) {
+        showToast('Failed to load alarms: ' + e.message, 'error');
+    } finally {
+        document.getElementById('loading-bar').style.display = 'none';
+    }
+}
+
+/* ── Apply in-memory state/region filters ───────────────────────── */
+function applyFilters() {
+    // Summary always uses full cache (all states)
+    updateSummary(cachedAlarms);
+    updateSyncIndicator(cachedAlarms);
+
+    if (selectedCustomerIds.size === 0) {
+        renderEmpty('Müşteri seçin.', '☁');
+        document.getElementById('row-count').textContent = '';
+        return;
+    }
+
+    let visible = cachedAlarms;
+
+    if (!isAllStates) {
+        if (selectedStates.size === 0) {
+            visible = [];
+        } else {
+            visible = cachedAlarms.filter(a => selectedStates.has(a.state));
+        }
+    }
+
+    if (selectedRegion) {
+        visible = visible.filter(a => a.region === selectedRegion);
+    }
+
+    renderTable(visible);
+
+    const n = visible.length;
+    document.getElementById('row-count').textContent =
+        n > 0 ? `${n} alarm${n !== 1 ? 's' : ''} shown` : '';
+}
+
+/* ── Render chips ───────────────────────────────────────────────── */
+function renderChips() {
+    const el = document.getElementById('customer-chips');
+    if (allCustomers.length === 0) {
+        el.innerHTML = `<span style="font-size:0.8rem;color:var(--text-muted)">
+            No customers yet. <a href="/customers.html">Add one →</a></span>`;
+        return;
+    }
+    el.innerHTML = allCustomers.map(c => {
+        const active = selectedCustomerIds.has(c.id) ? 'active' : '';
+        return `<div class="chip ${active}" onclick="toggleCustomer(${c.id})">
+            ${escHtml(c.name)}
+            <span class="chip-count">${c.alarm_count}</span>
+        </div>`;
+    }).join('');
+}
+function renderChipsError(msg) {
+    document.getElementById('customer-chips').innerHTML =
+        `<span style="color:var(--danger);font-size:0.8rem">Error: ${escHtml(msg)}</span>`;
+}
+
+/* ── Toggle customer chip ───────────────────────────────────────── */
+function toggleCustomer(id) {
+    if (selectedCustomerIds.has(id)) {
+        selectedCustomerIds.delete(id);
+    } else {
+        selectedCustomerIds.add(id);
+    }
+    renderChips();
+    fetchAndCache(true);
+}
+
+/* ── State filter buttons ───────────────────────────────────────── */
+function toggleState(btn) {
+    const state = btn.dataset.state;
+
+    if (state === 'ALL') {
+        isAllStates = !isAllStates;
+        if (isAllStates) selectedStates.clear();
+    } else {
+        isAllStates = false;
+        if (selectedStates.has(state)) {
+            selectedStates.delete(state);
+        } else {
+            selectedStates.add(state);
+        }
+    }
+
+    syncStateBtnUI();
+    applyFilters();
+}
+
+function syncStateBtnUI() {
+    document.querySelectorAll('#state-filter-btns .filter-btn').forEach(b => {
+        const s = b.dataset.state;
+        if (s === 'ALL') {
+            b.classList.toggle('active', isAllStates);
+        } else {
+            b.classList.toggle('active', !isAllStates && selectedStates.has(s));
+        }
+    });
+}
+
+/* ── Region filter ──────────────────────────────────────────────── */
+function onRegionChange() {
+    selectedRegion = document.getElementById('region-select').value;
+    applyFilters();
+}
+
+function updateRegionDropdown() {
+    const sel = document.getElementById('region-select');
+    const prev = sel.value;
+    const regions = [...new Set(cachedAlarms.map(a => a.region))].sort();
+    sel.innerHTML = '<option value="">All Regions</option>' +
+        regions.map(r =>
+            `<option value="${r}" ${r === prev ? 'selected' : ''}>${escHtml(r)}</option>`
+        ).join('');
+}
+
+/* ── Summary cards ──────────────────────────────────────────────── */
+function updateSummary(alarms) {
+    const alarm = alarms.filter(a => a.state === 'ALARM').length;
+    const insuf = alarms.filter(a => a.state === 'INSUFFICIENT_DATA').length;
+    const ok    = alarms.filter(a => a.state === 'OK').length;
+    const accts = new Set(alarms.map(a => a.account_db_id)).size;
+    document.getElementById('sum-alarm').textContent    = alarm;
+    document.getElementById('sum-insuf').textContent    = insuf;
+    document.getElementById('sum-ok').textContent       = ok;
+    document.getElementById('sum-accounts').textContent = accts;
+}
+
+/* ── Sync indicator ─────────────────────────────────────────────── */
+function updateSyncIndicator(alarms) {
+    const el = document.getElementById('sync-indicator');
+    const times = alarms
+        .map(a => a.last_sync_at)
+        .filter(Boolean)
+        .map(s => new Date(s.endsWith('Z') ? s : s + 'Z').getTime());
+
+    if (times.length === 0) {
+        el.textContent = 'Son sync: henüz yok';
+        return;
+    }
+    // Show oldest (all data is at least this fresh)
+    el.textContent = 'Son sync: ' + formatDateTime(new Date(Math.min(...times)).toISOString());
+}
+
+/* ── Render table ───────────────────────────────────────────────── */
+function renderTable(alarms) {
+    const el = document.getElementById('table-container');
+
+    if (alarms.length === 0) {
+        const msg = (selectedStates.size === 0 && !isAllStates)
+            ? 'Durum filtresi seçin.'
+            : '🟢 Seçili hesaplarda aktif alarm yok.';
+        renderEmpty(msg, alarms.length === 0 && cachedAlarms.length > 0 ? '🔍' : '🟢');
+        return;
+    }
+
+    el.innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Customer</th>
+            <th>Account</th>
+            <th>Account ID</th>
+            <th>Region</th>
+            <th>Alarm Name</th>
+            <th>Namespace</th>
+            <th>State</th>
+            <th>Last Changed</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${alarms.map(a => `
+            <tr>
+              <td style="font-weight:500">${escHtml(a.customer_name)}</td>
+              <td>${escHtml(a.account_name || '—')}</td>
+              <td style="font-size:0.78rem;color:var(--text-secondary);font-family:var(--font)">
+                ${escHtml(a.account_id)}</td>
+              <td style="font-size:0.78rem">${escHtml(a.region)}</td>
+              <td style="max-width:260px">
+                <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                      title="${escHtml(a.alarm_name)}">${escHtml(a.alarm_name)}</span>
+                ${a.alarm_description
+                    ? `<span style="font-size:0.72rem;color:var(--text-secondary);display:block;
+                              overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                              title="${escHtml(a.alarm_description)}">${escHtml(a.alarm_description)}</span>`
+                    : ''}
+              </td>
+              <td style="font-size:0.78rem;color:var(--text-secondary)">${escHtml(a.namespace || '—')}</td>
+              <td>${stateBadge(a.state)}</td>
+              <td>
+                <span title="${escHtml(formatDateTimeAbsolute(a.updated_at))}"
+                      style="cursor:default;white-space:nowrap">
+                  ${formatDateTime(a.updated_at)}
+                </span>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function renderEmpty(msg, icon = '☁') {
+    document.getElementById('table-container').innerHTML = `
+        <div class="empty-state">
+            <div class="empty-state-icon">${icon}</div>
+            <div class="empty-state-text">${escHtml(msg)}</div>
+        </div>`;
+}
+
+/* ── Manual sync ────────────────────────────────────────────────── */
+async function triggerSync() {
+    if (isSyncing) return;
+    isSyncing = true;
+    const btn = document.getElementById('sync-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+
+    try {
+        await apiPost('/sync', {});
+        showToast('Sync started in background.', 'success');
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+
+    setTimeout(async () => {
+        await loadCustomers();
+        await fetchAndCache(true);
+        isSyncing = false;
+        btn.disabled = false;
+        btn.innerHTML = '🔄 Sync';
+    }, 3000);
+}
+
+/* ── Auto-refresh every 30 s ────────────────────────────────────── */
+function startRefreshTimer() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(async () => {
+        await loadCustomers();
+        await fetchAndCache(true);
+    }, 30000);
+}
+
+/* ── Start ──────────────────────────────────────────────────────── */
+init();
+</script>
+</body>
+</html>

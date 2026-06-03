@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customers — Alarm Dashboard</title>
+    <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="navbar">
+    <a href="/" class="navbar-logo">Alarm<span>Dashboard</span></a>
+    <ul class="navbar-links">
+        <li><a href="/">Dashboard</a></li>
+        <li><a href="/customers.html">Customers</a></li>
+    </ul>
+</nav>
+
+<div class="page">
+    <div class="page-header">
+        <h1 class="page-title">Customers</h1>
+        <a href="/add_customer.html" class="btn btn-primary">+ New Customer</a>
+    </div>
+    <div id="content"></div>
+</div>
+
+<div id="toast-container"></div>
+<script src="assets/app.js"></script>
+<script>
+function renderSkeleton() {
+    document.getElementById('content').innerHTML =
+        '<div class="card-grid">' +
+        [1, 2, 3].map(() => `
+          <div class="card">
+            <div class="skeleton" style="height:15px;width:55%;margin-bottom:10px"></div>
+            <div class="skeleton" style="height:11px;width:38%"></div>
+            <div style="display:flex;gap:12px;margin-top:18px">
+              <div class="skeleton" style="height:22px;width:64px;border-radius:9999px"></div>
+            </div>
+          </div>`).join('') +
+        '</div>';
+}
+
+async function loadCustomers() {
+    renderSkeleton();
+    try {
+        const customers = await apiGet('/customers');
+        renderCustomers(customers);
+    } catch (e) {
+        document.getElementById('content').innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">⚠</div>
+                <div class="empty-state-text">${escHtml(e.message)}</div>
+            </div>`;
+    }
+}
+
+function renderCustomers(customers) {
+    const content = document.getElementById('content');
+    if (customers.length === 0) {
+        content.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">☁</div>
+                <div class="empty-state-text">No customers yet.</div>
+                <div class="empty-state-sub">
+                    <a href="/add_customer.html">Add your first customer</a> to start monitoring alarms.
+                </div>
+            </div>`;
+        return;
+    }
+
+    const grid = document.createElement('div');
+    grid.className = 'card-grid';
+    grid.innerHTML = customers.map(c => `
+        <div class="card card-clickable"
+             onclick="location.href='customer_detail.html?id=${c.id}'"
+             data-id="${c.id}">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">${escHtml(c.name)}</div>
+                    <div class="card-meta">${escHtml(c.root_account_id)}</div>
+                </div>
+                <span class="badge badge-${c.account_type}">
+                    ${c.account_type.toUpperCase()}
+                </span>
+            </div>
+            <div class="card-stats">
+                <div>
+                    <div class="card-stat-value">${c.account_count}</div>
+                    <div class="card-stat-label">Accounts</div>
+                </div>
+                <div>
+                    <div class="card-stat-value ${c.alarm_count > 0 ? 'text-alarm' : ''}">
+                        ${c.alarm_count}
+                    </div>
+                    <div class="card-stat-label">Alarms</div>
+                </div>
+                <div style="margin-left:auto;text-align:right">
+                    <div style="font-size:0.75rem;color:var(--text-secondary)">
+                        ${formatDateTime(c.last_sync_at)}
+                    </div>
+                    <div class="card-stat-label">Last sync</div>
+                </div>
+            </div>
+            <div style="margin-top:14px;display:flex;justify-content:flex-end">
+                <button class="btn btn-danger btn-sm"
+                        onclick="deleteCustomer(event, ${c.id}, '${escHtml(c.name)}')">
+                    Delete
+                </button>
+            </div>
+        </div>
+    `).join('');
+
+    content.innerHTML = '';
+    content.appendChild(grid);
+}
+
+async function deleteCustomer(e, id, name) {
+    e.stopPropagation();
+    if (!confirm(`Delete customer "${name}"?\n\nAll linked accounts and alarms will be permanently removed.`)) return;
+    try {
+        await apiDelete(`/customers/${id}`);
+        showToast(`"${name}" deleted.`, 'success');
+        loadCustomers();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+loadCustomers();
+</script>
+</body>
+</html>
