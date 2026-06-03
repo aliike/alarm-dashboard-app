@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.events import EVENT_JOB_ERROR
 
 from database import SessionLocal
 from models import Customer, Account, Alarm
@@ -16,6 +17,10 @@ import aws_client
 logger = logging.getLogger(__name__)
 
 _scheduler = BackgroundScheduler(timezone="UTC")
+
+
+def is_scheduler_running() -> bool:
+    return _scheduler.running
 
 
 # ── Low-level: single account ─────────────────────────────────
@@ -63,7 +68,6 @@ def sync_account(db_account_id: int) -> None:
                         updated_at=ts,
                     ))
 
-            # Commit in one shot: delete old + insert new
             db.query(Alarm).filter(Alarm.account_id_fk == db_account_id).delete()
             for row in alarm_rows:
                 db.add(Alarm(**row))
@@ -97,7 +101,6 @@ def sync_customer(customer_id: int) -> None:
     For payer accounts: first discovers sub-accounts via Organizations.
     Each account is synced independently.
     """
-    # ── Phase 1: org discovery (payer only) + collect account IDs ──
     account_ids: list[int] = []
     db = SessionLocal()
     try:
@@ -144,7 +147,6 @@ def sync_customer(customer_id: int) -> None:
                     db.commit()
 
                 except ValueError as exc:
-                    # Non-fatal: log and continue with existing accounts
                     logger.warning(f"[sync] customer='{customer.name}' org discovery failed: {exc}")
 
         account_ids = [
@@ -154,7 +156,6 @@ def sync_customer(customer_id: int) -> None:
     finally:
         db.close()
 
-    # ── Phase 2: sync each account independently ──────────────────
     for acct_id in account_ids:
         try:
             sync_account(acct_id)
@@ -187,24 +188,41 @@ def sync_all_customers() -> None:
 
 # ── Scheduler lifecycle ───────────────────────────────────────
 
+def _on_job_error(event) -> None:
+    logger.error(f"[scheduler] Job '{event.job_id}' raised unhandled exception: {event.exception}")
+
+
 def setup_scheduler() -> None:
-    """Start APScheduler: periodic 5-min sync + one-shot initial sync after 10 s."""
-    _scheduler.add_job(
-        sync_all_customers,
-        "interval",
-        minutes=5,
-        id="sync_periodic",
-        replace_existing=True,
-    )
-    _scheduler.add_job(
-        sync_all_customers,
-        "date",
-        run_date=datetime.now(timezone.utc) + timedelta(seconds=10),
-        id="sync_initial",
-        replace_existing=True,
-    )
-    _scheduler.start()
-    logger.info("[scheduler] Started — first sync in 10 s, then every 5 min")
+    """
+    Start APScheduler with crash protection.
+    If the scheduler fails to start the app continues — manual sync still works.
+    """
+    try:
+        _scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)
+
+        _scheduler.add_job(
+            sync_all_customers,
+            "interval",
+            minutes=5,
+            id="sync_periodic",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        _scheduler.add_job(
+            sync_all_customers,
+            "date",
+            run_date=datetime.now(timezone.utc) + timedelta(seconds=10),
+            id="sync_initial",
+            replace_existing=True,
+            max_instances=1,
+        )
+        _scheduler.start()
+        logger.info("[scheduler] Started — first sync in 10 s, then every 5 min")
+
+    except Exception as exc:
+        logger.error(f"[scheduler] Failed to start: {exc}")
+        logger.warning("[scheduler] App will continue without scheduler — use POST /api/sync to sync manually")
 
 
 def stop_scheduler() -> None:
