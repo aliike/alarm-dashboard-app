@@ -70,10 +70,57 @@
     </div>
 
     <!-- ── Accounts table ───────────────────────────────────── -->
-    <div style="font-size:0.7rem;font-weight:600;text-transform:uppercase;
-                letter-spacing:0.08em;color:var(--text-secondary);margin-bottom:8px">
-        Accounts
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:0.7rem;font-weight:600;text-transform:uppercase;
+                    letter-spacing:0.08em;color:var(--text-secondary)">
+            Accounts
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="toggleAddAccountForm()">
+            + Hesap Ekle
+        </button>
     </div>
+
+    <!-- ── Add Account inline form ───────────────────────────── -->
+    <div id="add-account-section" style="display:none;margin-bottom:12px">
+        <div class="card" style="border-color:var(--accent)">
+            <div style="font-size:0.82rem;font-weight:600;margin-bottom:16px;color:var(--accent)">
+                Yeni Hesap Ekle
+            </div>
+            <form id="add-account-form" novalidate>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                    <div class="form-group" style="margin-bottom:0">
+                        <label class="form-label" for="aa-name">Hesap Adı</label>
+                        <input class="form-input" id="aa-name" type="text"
+                               placeholder="örn. Production, Staging" autocomplete="off">
+                        <span class="form-error" id="aa-err-name">Zorunlu.</span>
+                    </div>
+                    <div class="form-group" style="margin-bottom:0">
+                        <label class="form-label" for="aa-account-id">Account ID</label>
+                        <input class="form-input" id="aa-account-id" type="text"
+                               placeholder="123456789012" maxlength="12"
+                               inputmode="numeric" autocomplete="off">
+                        <span class="form-error" id="aa-err-account-id">12 haneli rakam.</span>
+                    </div>
+                </div>
+                <div class="form-group" style="margin-top:12px;margin-bottom:0">
+                    <label class="form-label" for="aa-role-arn">Role ARN</label>
+                    <input class="form-input" id="aa-role-arn" type="text"
+                           placeholder="arn:aws:iam::123456789012:role/AlarmDashboardRole"
+                           autocomplete="off">
+                    <span class="form-error" id="aa-err-role-arn">Geçersiz ARN formatı.</span>
+                    <span class="form-hint">Account ID girilince otomatik doldurulur.</span>
+                </div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+                    <button type="button" class="btn btn-secondary btn-sm"
+                            onclick="toggleAddAccountForm()">İptal</button>
+                    <button type="submit" id="aa-submit-btn" class="btn btn-primary btn-sm">
+                        Hesap Ekle
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div class="card" style="padding:0;overflow:hidden;margin-bottom:28px">
         <div id="accounts-container">
             <div class="empty-state" style="padding:32px">
@@ -435,6 +482,68 @@ function startRefreshTimer() {
         await loadAlarms();
     }, 30000);
 }
+
+/* ── Add Account inline form ────────────────────────────────────── */
+
+const AA_ARN_RE  = /^arn:aws:iam::\d{12}:role\/.+$/;
+const AA_ACCT_RE = /^\d{12}$/;
+
+function toggleAddAccountForm() {
+    const sec = document.getElementById('add-account-section');
+    const visible = sec.style.display !== 'none';
+    sec.style.display = visible ? 'none' : 'block';
+    if (!visible) document.getElementById('aa-name').focus();
+}
+
+// Auto-fill Role ARN when account ID is entered
+document.getElementById('aa-account-id').addEventListener('input', function () {
+    const id = this.value.trim();
+    const arn = document.getElementById('aa-role-arn');
+    if (AA_ACCT_RE.test(id)) {
+        arn.value = `arn:aws:iam::${id}:role/AlarmDashboardRole`;
+    } else if (!arn.value || /^arn:aws:iam::\d{12}:role\/AlarmDashboardRole$/.test(arn.value)) {
+        arn.value = '';
+    }
+});
+
+document.getElementById('add-account-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name      = document.getElementById('aa-name').value.trim();
+    const accountId = document.getElementById('aa-account-id').value.trim();
+    const roleArn   = document.getElementById('aa-role-arn').value.trim();
+
+    let valid = true;
+    function setErr(fieldId, errId, cond) {
+        document.getElementById(fieldId).classList.toggle('error', cond);
+        document.getElementById(errId).classList.toggle('visible', cond);
+        if (cond) valid = false;
+    }
+    setErr('aa-name',       'aa-err-name',       !name);
+    setErr('aa-account-id', 'aa-err-account-id', !AA_ACCT_RE.test(accountId));
+    setErr('aa-role-arn',   'aa-err-role-arn',   !AA_ARN_RE.test(roleArn));
+    if (!valid) return;
+
+    const btn = document.getElementById('aa-submit-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+
+    try {
+        await apiPost(`/customers/${customerId}/accounts`, {
+            account_name: name,
+            account_id:   accountId,
+            role_arn:     roleArn,
+        });
+        showToast(`"${name}" hesabı eklendi, sync başlatıldı.`, 'success');
+        document.getElementById('add-account-form').reset();
+        toggleAddAccountForm();
+        await loadCustomer();
+        await loadAlarms();
+    } catch (err) {
+        showToast(err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Hesap Ekle';
+    }
+});
 
 /* ── Start ──────────────────────────────────────────────────────── */
 init();

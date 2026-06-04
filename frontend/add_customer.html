@@ -105,6 +105,14 @@
                         <input class="form-input" id="name" type="text"
                                placeholder="örn. Acme Corp" autocomplete="off">
                         <span class="form-error" id="err-name">Bu alan zorunludur.</span>
+                        <span class="form-hint">Şirket / müşteri görünen adı.</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="account_name">Hesap Adı</label>
+                        <input class="form-input" id="account_name" type="text"
+                               placeholder="örn. Production, Main Account" autocomplete="off">
+                        <span class="form-hint">Bu AWS hesabının görünen adı. Boş bırakılırsa müşteri adı kullanılır.</span>
                     </div>
 
                     <div class="form-group">
@@ -551,11 +559,12 @@ function kopyala(codeId, btn) {
 document.getElementById('add-form').addEventListener('submit', async (e) => {
     e.preventDefault();
 
-    const name      = document.getElementById('name').value.trim();
-    const accountId = document.getElementById('root_account_id').value.trim();
-    const roleArn   = document.getElementById('role_arn').value.trim();
-    const extId     = document.getElementById('external_id').value.trim();
-    const acctType  = document.querySelector('input[name="account_type"]:checked').value;
+    const name        = document.getElementById('name').value.trim();
+    const accountName = document.getElementById('account_name').value.trim();
+    const accountId   = document.getElementById('root_account_id').value.trim();
+    const roleArn     = document.getElementById('role_arn').value.trim();
+    const extId       = document.getElementById('external_id').value.trim();
+    const acctType    = document.querySelector('input[name="account_type"]:checked').value;
 
     let valid = true;
     function setErr(fieldId, errId, cond) {
@@ -576,6 +585,7 @@ document.getElementById('add-form').addEventListener('submit', async (e) => {
     try {
         await apiPost('/customers', {
             name,
+            account_name:    accountName || null,
             account_type:    acctType,
             root_account_id: accountId,
             role_arn:        roleArn,

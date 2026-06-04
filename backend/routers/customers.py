@@ -18,8 +18,16 @@ _STATE_ORDER = case(
 
 class CustomerCreate(BaseModel):
     name: str
+    account_name: Optional[str] = None  # root account display name; defaults to name
     account_type: str
     root_account_id: str
+    role_arn: str
+    external_id: Optional[str] = None
+
+
+class AccountCreate(BaseModel):
+    account_name: str
+    account_id: str    # 12-digit AWS account ID
     role_arn: str
     external_id: Optional[str] = None
 
@@ -125,7 +133,7 @@ def create_customer(data: CustomerCreate, background_tasks: BackgroundTasks, db:
     db.add(Account(
         customer_id=customer.id,
         account_id=data.root_account_id,
-        account_name=data.name,
+        account_name=data.account_name or data.name,
         role_arn=data.role_arn,
         is_root=1,
         sync_status="pending",
@@ -144,6 +152,48 @@ def create_customer(data: CustomerCreate, background_tasks: BackgroundTasks, db:
         "role_arn": customer.role_arn,
         "external_id": customer.external_id,
         "created_at": customer.created_at.isoformat() if customer.created_at else None,
+    }
+
+
+@router.post("/customers/{customer_id}/accounts", status_code=201)
+def add_account(
+    customer_id: int,
+    data: AccountCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    existing = db.query(Account).filter(
+        Account.customer_id == customer_id,
+        Account.account_id  == data.account_id,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="This account ID already exists for this customer")
+
+    account = Account(
+        customer_id  = customer_id,
+        account_id   = data.account_id,
+        account_name = data.account_name,
+        role_arn     = data.role_arn,
+        is_root      = 0,
+        sync_status  = "pending",
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+
+    from scheduler import sync_account
+    background_tasks.add_task(sync_account, account.id)
+
+    return {
+        "id":           account.id,
+        "account_id":   account.account_id,
+        "account_name": account.account_name,
+        "role_arn":     account.role_arn,
+        "sync_status":  account.sync_status,
     }
 
 
