@@ -252,11 +252,15 @@
                         <li>Role adı: <code>AlarmDashboardRole</code></li>
                     </ol>
                     <div class="guide-step-desc" style="margin-bottom:6px">
-                        Trust Policy için EC2'nun bulunduğu hesabın Account ID'sini girin:
+                        Trust Policy'de kullanılacak EC2 Account ID
+                        <span style="background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd;
+                                     border-radius:4px;padding:1px 7px;font-size:0.72rem;
+                                     font-weight:600;margin-left:4px">önceden tanımlı</span>:
                     </div>
                     <input class="guide-input" id="guide-ec2-account-id" type="text"
-                           maxlength="12" placeholder="EC2 Account ID (12 hane)"
-                           inputmode="numeric" autocomplete="off">
+                           maxlength="12" value="461902953491"
+                           inputmode="numeric" autocomplete="off"
+                           style="font-weight:600;letter-spacing:0.05em">
                     <div class="code-wrap">
                         <pre class="code-block" id="trust-policy-code"></pre>
                         <button class="code-copy-btn" type="button"
@@ -275,6 +279,36 @@
                         <pre class="code-block" id="perm-policy-code"></pre>
                         <button class="code-copy-btn" type="button"
                                 onclick="kopyala('perm-policy-code', this)">📋 Kopyala</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── CloudFormation hızlı kurulum ───────────── -->
+            <div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;
+                        padding:18px 20px;margin:4px 0 24px">
+                <div style="display:flex;align-items:flex-start;gap:12px">
+                    <div style="font-size:1.4rem;line-height:1">⚡</div>
+                    <div style="flex:1">
+                        <div style="font-size:0.85rem;font-weight:600;color:#1e40af;margin-bottom:4px">
+                            Hızlı Kurulum — CloudFormation
+                        </div>
+                        <div style="font-size:0.78rem;color:#3b5ba5;margin-bottom:12px;line-height:1.5">
+                            Yukarıdaki adımları manuel yapmak yerine, aşağıdaki butona tıklayarak
+                            CloudFormation template'i indirin ve müşteri hesabında Stack olarak çalıştırın.
+                            IAM Role otomatik oluşturulur, Stack Output'tan ARN'ı kopyalarsınız.
+                        </div>
+                        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                            <button type="button" class="btn btn-primary"
+                                    onclick="downloadCFTemplate()"
+                                    id="cf-download-btn">
+                                📥 CloudFormation Template İndir
+                            </button>
+                            <span id="cf-type-label"
+                                  style="font-size:0.72rem;color:#3b5ba5"></span>
+                        </div>
+                        <div style="font-size:0.72rem;color:#6b7280;margin-top:10px">
+                            AWS Console → CloudFormation → Create Stack → Upload a template file
+                        </div>
                     </div>
                 </div>
             </div>
@@ -332,12 +366,88 @@ const ACCT_RE = /^\d{12}$/;
 
 /* ── Guide update ──────────────────────────────────────────── */
 
+const EC2_ACCOUNT_ID = '461902953491';
+
 function vals() {
     return {
         accountId:    document.getElementById('root_account_id').value.trim(),
-        ec2AccountId: document.getElementById('guide-ec2-account-id').value.trim(),
+        ec2AccountId: document.getElementById('guide-ec2-account-id').value.trim() || EC2_ACCOUNT_ID,
+        externalId:   document.getElementById('external_id').value.trim(),
         isPayer:      document.querySelector('input[name="account_type"]:checked').value === 'payer',
     };
+}
+
+/* ── CloudFormation template ───────────────────────────────── */
+
+function generateCFTemplate({ isPayer, ec2AccountId, externalId }) {
+    const actions = [
+        'cloudwatch:DescribeAlarms',
+        'ec2:DescribeRegions',
+        ...(isPayer ? ['organizations:ListAccounts', 'organizations:DescribeAccount'] : []),
+    ];
+    const actionsYaml = actions.map(a => `                  - ${a}`).join('\n');
+
+    const conditionBlock = externalId
+        ? `\n              Condition:\n                StringEquals:\n                  'sts:ExternalId': '${externalId}'`
+        : '';
+
+    const typeLabel = isPayer ? 'Payer (Organization)' : 'Standalone';
+
+    return `AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AlarmDashboardRole — IAM Role for CloudWatch Alarm Dashboard.
+  Hesap tipi: ${typeLabel}
+  Bu template'i musteri AWS hesabinda Stack olarak calistirin.
+  Stack Output'taki RoleArn degerini forma yapistirin.
+
+Resources:
+  AlarmDashboardRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AlarmDashboardRole
+      Description: CloudWatch Alarm Dashboard icin salt okunur erisim
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: 'arn:aws:iam::${ec2AccountId}:root'
+            Action: 'sts:AssumeRole'${conditionBlock}
+      Policies:
+        - PolicyName: AlarmDashboardPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+${actionsYaml}
+                Resource: '*'
+
+Outputs:
+  RoleArn:
+    Description: Bu ARN'i Alarm Dashboard "Role ARN" alanina yapistirin
+    Value: !GetAtt AlarmDashboardRole.Arn
+    Export:
+      Name: AlarmDashboardRoleArn
+`;
+}
+
+function downloadCFTemplate() {
+    const { isPayer, ec2AccountId, externalId } = vals();
+    const yaml     = generateCFTemplate({ isPayer, ec2AccountId, externalId });
+    const filename = `AlarmDashboardRole-${isPayer ? 'payer' : 'standalone'}.yaml`;
+
+    const blob = new Blob([yaml], { type: 'application/x-yaml' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast(`${filename} indirildi.`, 'success');
 }
 
 function updateGuide() {
@@ -386,6 +496,14 @@ function updateGuide() {
 
     // Step 6 — payer only
     document.getElementById('step6').classList.toggle('step6-hidden', !isPayer);
+
+    // CF download label
+    const cfLabel = document.getElementById('cf-type-label');
+    if (cfLabel) {
+        cfLabel.textContent = isPayer
+            ? 'Organizations izinleri dahil (Payer)'
+            : 'CloudWatch + EC2 izinleri (Standalone)';
+    }
 }
 
 /* ── Auto-fill Role ARN ────────────────────────────────────── */
