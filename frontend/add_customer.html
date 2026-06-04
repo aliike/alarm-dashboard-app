@@ -339,25 +339,84 @@
                 </div>
             </div>
 
-            <!-- ── ADIM 6: Alt hesaplar (sadece Payer) ────── -->
+            <!-- ── ADIM 6: StackSet ile member hesaplar (sadece Payer) ── -->
             <div class="guide-step step6-hidden" id="step6">
                 <div class="guide-step-num active">6</div>
                 <div class="guide-step-body">
-                    <div class="guide-step-title">Alt hesaplara da role ekleyin</div>
+                    <div class="guide-step-title">Member hesaplara role'ü StackSet ile deploy edin</div>
                     <div class="guide-step-desc">
-                        <strong>Payer hesabı seçtiniz.</strong>
-                        Organization'daki tüm üye (member) hesaplarda
-                        <strong>ADIM 3 ve 4'ü tekrar edin.</strong>
+                        Her member hesaba elle girip role oluşturmanıza gerek yok.
+                        <strong>CloudFormation StackSets</strong> ile payer hesabından
+                        tek seferlik deploy yaparak tüm Organization'a yayabilirsiniz.
+                        Sonradan katılan yeni hesaplara da otomatik uygulanır.
                     </div>
-                    <ul style="font-size:0.8rem;color:var(--text-secondary);
-                                margin:8px 0 0 16px;line-height:1.9">
-                        <li>Role adı her hesapta aynı olmalı: <code>AlarmDashboardRole</code></li>
-                        <li>Trust Policy'deki EC2 Account ID aynı kalır</li>
-                        <li>Permission Policy'de <code>organizations:*</code> gerekmez
-                            (opsiyonel ama eklenebilir)</li>
-                        <li>Alt hesaplar ilk sync'te <strong>otomatik keşfedilir</strong> —
-                            manuel eklemenize gerek yok</li>
-                    </ul>
+
+                    <!-- StackSet download -->
+                    <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;
+                                padding:14px 16px;margin-bottom:16px">
+                        <div style="font-size:0.8rem;font-weight:600;color:#15803d;margin-bottom:6px">
+                            Member hesaplar için template (organizations:* izni olmadan):
+                        </div>
+                        <div style="font-size:0.75rem;color:#166534;margin-bottom:10px">
+                            Bu template payer hesabı hariç tüm member hesaplara deploy edilecek.
+                            <code>cloudwatch:DescribeAlarms</code> ve <code>ec2:DescribeRegions</code>
+                            izinlerini içerir.
+                        </div>
+                        <button type="button" class="btn btn-sm"
+                                style="background:#16a34a;color:#fff;border-color:#16a34a"
+                                onclick="downloadStackSetTemplate()">
+                            📥 StackSet Template İndir
+                        </button>
+                        <span style="font-size:0.7rem;color:#166534;margin-left:8px">
+                            AlarmDashboardRole-stackset-members.yaml
+                        </span>
+                    </div>
+
+                    <!-- StackSet steps -->
+                    <div style="font-size:0.8rem;font-weight:600;margin-bottom:10px">
+                        StackSet oluşturma adımları (Payer hesabında):
+                    </div>
+                    <ol style="font-size:0.79rem;color:var(--text-secondary);
+                                margin:0 0 0 16px;line-height:2">
+                        <li>
+                            AWS Console → <strong>CloudFormation → StackSets → Create StackSet</strong>
+                        </li>
+                        <li>
+                            Permissions: <strong>Service-managed permissions</strong>
+                            <span style="display:block;font-size:0.72rem;color:var(--text-muted)">
+                                (AWS Organizations ile entegre — ayrıca IAM izni gerekmez)
+                            </span>
+                        </li>
+                        <li>
+                            Template: İndirdiğiniz
+                            <code>AlarmDashboardRole-stackset-members.yaml</code> dosyasını yükleyin
+                        </li>
+                        <li>
+                            Stack name: <code>AlarmDashboardRole</code>
+                        </li>
+                        <li>
+                            Deployment targets: <strong>Deploy to organization</strong>
+                            (veya belirli OU'ları seçin)
+                        </li>
+                        <li>
+                            Auto-deployment: <strong>Activated</strong> — yeni üye hesaplara
+                            otomatik deploy olur
+                        </li>
+                        <li>
+                            Regions: <strong>us-east-1</strong> yeterli
+                            (IAM global servistir, region bağımsız)
+                        </li>
+                        <li>
+                            <strong>Submit</strong> → tüm member hesaplarda role oluşur ✓
+                        </li>
+                    </ol>
+
+                    <div class="alert alert-info" style="margin-top:14px;font-size:0.78rem">
+                        <strong>StackSet &amp; Organizations trusted access:</strong>
+                        İlk kullanımda
+                        <em>CloudFormation → Settings → Activate trusted access with AWS Organizations</em>
+                        adımını tamamlamanız gerekebilir.
+                    </div>
                 </div>
             </div>
 
@@ -438,6 +497,62 @@ Outputs:
     Export:
       Name: AlarmDashboardRoleArn
 `;
+}
+
+function generateStackSetTemplate(ec2AccountId) {
+    return `AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AlarmDashboardRole - Member hesaplar icin CloudWatch Alarm Dashboard IAM Role.
+  Bu template'i Payer hesabindan StackSet ile tum member hesaplara deploy edin.
+  IAM global servis oldugundan yalnizca bir region'a (us-east-1) deploy etmek yeterlidir.
+
+Resources:
+  AlarmDashboardRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AlarmDashboardRole
+      Description: CloudWatch Alarm Dashboard icin salt okunur erisim (member hesap)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: 'arn:aws:iam::${ec2AccountId}:root'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: AlarmDashboardPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:DescribeAlarms
+                  - ec2:DescribeRegions
+                Resource: '*'
+
+Outputs:
+  RoleArn:
+    Description: Member hesap Role ARN
+    Value: !GetAtt AlarmDashboardRole.Arn
+`;
+}
+
+function downloadStackSetTemplate() {
+    const { ec2AccountId } = vals();
+    const yaml     = generateStackSetTemplate(ec2AccountId);
+    const filename = 'AlarmDashboardRole-stackset-members.yaml';
+
+    const blob = new Blob([yaml], { type: 'application/x-yaml' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast(`${filename} indirildi.`, 'success');
 }
 
 function downloadCFTemplate() {
