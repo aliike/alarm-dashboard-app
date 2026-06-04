@@ -1,0 +1,42 @@
+services:
+  backend:
+    image: 461902953491.dkr.ecr.us-east-1.amazonaws.com/commencis-alarm-monitoring:latest
+    volumes:
+      - ./data:/data
+    environment:
+      - DATABASE_PATH=/data/alarm_dashboard.db
+    env_file:
+      - .env
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  nginx:
+    image: 461902953491.dkr.ecr.us-east-1.amazonaws.com/commencis-alarm-monitoring-nginx:latest
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

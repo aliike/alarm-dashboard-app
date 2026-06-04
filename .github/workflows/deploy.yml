@@ -1,0 +1,138 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches:
+      - master
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 461902953491.dkr.ecr.us-east-1.amazonaws.com
+  BACKEND_REPO: commencis-alarm-monitoring
+  NGINX_REPO: commencis-alarm-monitoring-nginx
+  EC2_INSTANCE_ID: i-06d78ee597bddf949
+  APP_DIR: /home/ec2-user/commencis-alarm-dashboard
+  IAM_ROLE: arn:aws:iam::461902953491:role/GitHubActionsDeployRole
+
+jobs:
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.IAM_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend image
+        run: |
+          docker build -t ${{ env.ECR_REGISTRY }}/${{ env.BACKEND_REPO }}:latest ./backend
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.BACKEND_REPO }}:latest
+
+      - name: Build and push nginx image
+        run: |
+          docker build \
+            -t ${{ env.ECR_REGISTRY }}/${{ env.NGINX_REPO }}:latest \
+            -f nginx/Dockerfile .
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.NGINX_REPO }}:latest
+
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.IAM_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy via SSM
+        run: |
+          # docker-compose.prod.yml içeriğini base64 ile encode et
+          COMPOSE_B64=$(base64 -w 0 docker-compose.prod.yml)
+
+          # jq ile güvenli JSON oluştur (escape sorunlarını önler)
+          jq -n \
+            --arg instance "${{ env.EC2_INSTANCE_ID }}" \
+            --arg b64      "$COMPOSE_B64" \
+            --arg region   "${{ env.AWS_REGION }}" \
+            --arg registry "${{ env.ECR_REGISTRY }}" \
+            --arg appdir   "${{ env.APP_DIR }}" \
+            '{
+              InstanceIds: [$instance],
+              DocumentName: "AWS-RunShellScript",
+              Parameters: {
+                commands: [
+                  "set -euo pipefail",
+                  ("mkdir -p " + $appdir + "/data"),
+                  ("echo " + $b64 + " | base64 -d > " + $appdir + "/docker-compose.yml"),
+                  ("aws ecr get-login-password --region " + $region + " | docker login --username AWS --password-stdin " + $registry),
+                  ("cd " + $appdir + " && docker compose pull"),
+                  ("cd " + $appdir + " && docker compose up -d --remove-orphans"),
+                  "docker image prune -f",
+                  "echo Deploy successful"
+                ]
+              }
+            }' > /tmp/ssm-input.json
+
+          # SSM komutunu gönder
+          COMMAND_ID=$(aws ssm send-command \
+            --cli-input-json file:///tmp/ssm-input.json \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command ID: $COMMAND_ID"
+
+          # Sonucu bekle (max 5 dakika, 10'ar saniyede poll)
+          for i in $(seq 1 30); do
+            sleep 10
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "${{ env.EC2_INSTANCE_ID }}" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+            echo "[$i/30] Status: $STATUS"
+
+            if [ "$STATUS" = "Success" ]; then
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "${{ env.EC2_INSTANCE_ID }}" \
+                --query 'StandardOutputContent' \
+                --output text
+              echo "Deploy tamamlandi!"
+              exit 0
+            fi
+
+            if [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
+              echo "--- STDERR ---"
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "${{ env.EC2_INSTANCE_ID }}" \
+                --query 'StandardErrorContent' \
+                --output text
+              echo "Deploy basarisiz. Status: $STATUS"
+              exit 1
+            fi
+          done
+
+          echo "Timeout: SSM komutu 5 dakikada tamamlanamadi"
+          exit 1
